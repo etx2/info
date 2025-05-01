@@ -1,0 +1,511 @@
+#!/bin/bash
+# info:
+# Gives information about system
+
+# cut string by character es. | cut -d ":" -f 1  | where : for example is the delimitator of the string and -f 1 return the first result
+# cut first character of line es. | sed 's/.$//'
+# cut last character of line es. | sed 's/^.//' 
+# getting first line of string es. | head -1
+# getting last line of string es. | tail -1  
+# grep exclude es. | grep -v " " (es grep -V "FAILED" will not shot the result that contain FAILED
+# cut string via awk es: | awk -F 'delimitator' '{print $1}' (delimitator is the caratcher who divide the string and $1 is the first result)
+# remove first world doesnt metter how many space is in it: sed 's/[^ ]* *//'
+
+
+function coloredEcho(){
+    local exp=$1;
+    local color=$2;
+    if ! [[ $color =~ '^[0-9]$' ]] ; then
+       case $(echo $color | tr '[:upper:]' '[:lower:]') in
+        black) color=0 ;;
+        red) color=1 ;;
+        green) color=2 ;;
+        yellow) color=3 ;;
+        blue) color=4 ;;
+        magenta) color=5 ;;
+        cyan) color=6 ;;
+        white|*) color=7 ;; # white or invalid color
+       esac
+    fi
+    tput setaf $color;
+    echo $exp;
+    tput sgr0;
+}
+
+drawline() {
+    printf "%*s" $(tput cols) | tr ' ' '.'
+}
+
+function system() {
+    # SYSTEM INFO 
+    coloredEcho "System info: " $separator
+    echo `uname -v`
+    coloredEcho "Uptime: `uptime`" $info 
+    coloredEcho "Running process for all user: `ps ax | wc -l`" $info
+    coloredEcho "Running process for user `whoami` : `ps x | wc -l`" $info
+    coloredEcho "Hostname: $HOSTNAME" $info
+
+    sleep 0.5
+    coloredEcho "Ram / Swap : `free -mhL --si`" $info
+
+}
+
+function cpu_info(){
+    # CPU INFO
+    if command -v lscpu 2>&1 >/dev/null
+    then
+        coloredEcho "CPU Info: " $separator
+        echo "-> lscpu present on system, getting information..."
+        var=`lscpu | grep Vendor | cut -d ":" -f 2`
+        coloredEcho "Cpu: $var" $info
+        var=`lscpu | grep Model | cut -d ":" -f 2`
+        coloredEcho "Model: $var" $info
+        var=`cat /proc/cpuinfo | grep processor | wc -l`
+        coloredEcho "Number of core: $var" $info
+    else
+        coloredEcho "Cannot get more information, lscpu is missing" $error
+    fi
+    if command -v python3 2>&1 >/dev/null
+    then
+        var=`printf "%b" "import psutil\nprint('{}%'.format(psutil.cpu_percent(interval=2)))" | python3`
+        coloredEcho "Use percentage: $var" $info
+    else
+        coloredEcho "Cannot check percentage, python3 is missing" $error
+    fi
+}
+
+function hardware_info(){
+    # HARDWARE INFO
+    if command -v lspci 2>&1 >/dev/null
+    then 
+        coloredEcho "Hardware Info: " $separator
+        echo "-> lspci present on system, getting information..."
+        coloredEcho "`lspci | grep VGA | awk '{$1= ":"; print $0}' | awk '{$1= " "; print $0}' `" $info
+        coloredEcho "`lspci -nnk | grep VGA -A3 | tail -1`" $info
+        coloredEcho "`lspci -nnk | grep VGA -A4 | tail -1`" $info
+        coloredEcho "`lspci | grep audio | awk '{$1= ":"; print $0}' | awk '{$1= " "; print $0}' `" $info
+        coloredEcho "`lspci -nnk | grep audio -A3 | tail -1`" $info
+        coloredEcho "`lspci -nnk | grep audio -A4 | tail -1`" $info
+        coloredEcho "`lspci | grep Network | awk '{$1= ":"; print $0}' | awk '{$1= " "; print $0}' `" $info
+        coloredEcho "`lspci -nnk | grep Network -A3 | tail -1`" $info
+        coloredEcho "`lspci -nnk | grep Network -A4 | tail -1`" $info
+    else
+        coloredEcho "Cannot get information, lspci is missing" $error
+    fi
+    if command -v dmidecode 2>&1 >/dev/null 
+    then
+        echo " " 
+        coloredEcho "This part requires root privilege, running as sudo if is configured on system" $info
+        if command -v sudo 2>&1 >/dev/null
+        then 
+            var=`whoami`
+            [ "$UID" -eq 0 ] || exec sudo bash "$0" "-root" "-h"
+        else
+            coloredEccho "sudo isn't configured in your system" $error
+        fi
+        if [ "$UID" -eq 0 -o "$EUID" -eq 0 ]; then
+            exec bash "$0" "-root" "-h"
+        else
+            coloredEcho "Try run as root" $error
+            exit 1
+        fi
+        su $var
+    fi
+}
+
+function hardware_info_root() {
+    [ "$UID" -eq 0 ] || exit 1
+    coloredEcho "Hardware manufacter: `dmidecode -s system-manufacturer`" $info
+    coloredEcho "Product name: `dmidecode -s system-product-name`" $info
+    exit 1
+}
+
+function temperature_info() {
+    #TEMPERATURE INFO
+    coloredEcho "Temperature Info: " $separator
+    paste <(cat /sys/class/thermal/thermal_zone*/type) <(cat /sys/class/thermal/thermal_zone*/temp) | column -s $'\t' -t | sed 's/\(.\)..$/.\1°C/' >>/tmp/temperature
+    var=`wc -l /tmp/temperature | cut -d " " -f 1`
+    echo "-> Number of sensor in system: $var"
+    x=1; while  [ $x -le $var ]; do coloredEcho "`cat /tmp/temperature | head -n $x | tail -1 `" $info $(( x++ )); done
+    rm /tmp/temperature
+    if command -v sensors 2>&1 >/dev/null
+    then
+        coloredEcho "sensors is present, should be useful to run sensor for pretty result" green
+    else
+        coloredEcho "sensors is not present on the system, it can be installed using package manager" $error
+    fi
+}
+
+function disk_info(){
+    # DISK INFO
+    if command -v df 2>&1 >/dev/null
+    then
+        coloredEcho "Disk info: " $separator
+        echo "-> df present, getting information... "
+        var=`df / | grep / | cut -d" " -f1`
+        coloredEcho "Root Device: $var" $info
+        coloredEcho "Disk space: `df $var -h | sed -n 2p | cut -d " " -f 3`" $info
+        coloredEcho "Used: `df $var -h | sed -n 2p | cut -d " " -f 6`" $info
+        coloredEcho "Free: `df $var -h | sed -n 2p | cut -d " " -f 10`" $info
+        if command -v blkid 2>&1 >/dev/null
+        then 
+            var=`blkid $var | grep UUID | cut -d" " -f3 | cut -d "=" -f 2 | sed 's/.$//' | sed 's/^.//' | head -1`
+            coloredEcho "UUID: $var" $info
+        else
+            coloredEcho "Cannot get information, blkid is missing" $error
+        fi
+        if command -v lsblk 2>&1 >/dev/null
+        then 
+            var=`lsblk | grep disk | wc -l`
+            coloredEcho "Disk on device, using lsblk: $var" $info
+            x=1; while  [ $x -le $var ]; do coloredEcho "Disk $x : `lsblk | grep disk | head -n $x | tail -1 | cut -d " " -f 1`" $info $(( x++ )); done
+        else    
+            coloredEcho "Cannot get information, lsblk is missing" $error
+        fi
+    else
+        coloredEcho "Cannot get information, df is missing" $error
+    fi
+}
+
+function lan_info(){
+    # LAN INFO
+    if command -v route 2>&1 >/dev/null
+    then
+        coloredEcho "LAN info: " $separator
+        var=`route -n | grep 'UG[ \t]' | awk '{print $2}'`
+        if ping -c 1 $var &> /dev/null
+        then
+            echo "-> Lan connected... Getting lan information... "
+            coloredEcho "Gateway: $var" $info
+            var=`ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1'`
+            coloredEcho "Local ip address: $var" $info
+            var=`route | grep default | awk '{print $8}'`
+            coloredEcho "Local interface: $var" $info
+            coloredEcho "`nmcli -f CAPABILITIES.SPEED dev show $var`" $info
+        else
+            coloredEcho "No LAN Connection found" $error
+        fi
+    else
+        coloredEcho "Cannot get network information, route is missing" $error
+    fi
+    sleep 0.5
+    if $network 
+    then
+        coloredEcho "Selected for network information" yellow
+        if command -v ip 2>&1 >/dev/null
+        then
+            coloredEcho "Scanning for local network device: " $success
+            var=`route -n | grep 'UG[ \t]' | awk '{print $2}'`
+            var="${var}/24"
+            coloredEcho $var $info
+            nmap -sn $var  &> /dev/null 
+            var=`ip -r n | grep -v FAILED`
+            coloredEcho "Number of online device: `ip n | grep -v FAILED | wc -l`" $info
+        else
+            coloredEcho "Cannot scan due missing nmap software " $error
+        fi
+    fi
+        sleep 0.5
+}
+
+function network_info() {
+    # NETWORK INFO 
+    if command -v ip 2>&1 >/dev/null
+    then
+        coloredEcho "Network info: " $separator
+        if ping -c 1 8.8.8.8 &> /dev/null
+        then
+            coloredEcho "-> Online... getting information" $success
+            var=`ip route get 8.8.8.8 | sed -n 's/.* dev \([^\ ]*\) .*/\1/p'`
+            coloredEcho "Internet interface: $var" $info
+            var=`dig -4 TXT +short o-o.myaddr.l.google.com @ns1.google.com | sed 's/.$//' | sed 's/^.//' `
+            coloredEcho "Pubblic ip address: $var" $info 
+            # Localization
+            if ping -c 1 ipinfo.io &> /dev/null
+            then 
+                curl -s ipinfo.io >> /tmp/ipinfo.io 
+                coloredEcho "Country: `cat /tmp/ipinfo.io | grep "country" | awk -F '"' '{print $4}'`" $info #country
+                coloredEcho "Region: `cat /tmp/ipinfo.io | grep "region" | awk -F '"' '{print $4}'`" $info #Region
+                coloredEcho "City: `cat /tmp/ipinfo.io | grep "city" | awk -F '"' '{print $4}'`" $info #City
+                coloredEcho "Hostname: `cat /tmp/ipinfo.io | grep "hostname" | awk -F '"' '{print $4}'`" $info #hostname
+                coloredEcho "Longitude, Latitude: `cat /tmp/ipinfo.io | grep "loc" | awk -F '"' '{print $4}'`" $info #loc
+                coloredEcho "Timezone: `cat /tmp/ipinfo.io | grep "timezone" | awk -F '"' '{print $4}'`" $info #timezone
+                rm /tmp/ipinfo.io
+            else
+                coloredEcho "Cannot receive information from ipinfo.io" $error
+            fi
+            if $network
+            then
+                coloredEcho "Testing network speed: " $info
+                t=$(date +"%s"); wget http://speedtest.tele2.net/100MB.zip -T 1 -O  - >/dev/null 2>&1; echo -n "MBit/s: "; expr 8 \* 100 / $(($(date +"%s")-$t))
+            fi
+            else
+            coloredEcho "Not connected to internet, unable to test speed" $error
+        fi
+    else
+        coloredEcho "Cannot get network information, ip is missing" $error
+    fi
+    sleep 0.5
+    echo " "
+}
+
+function inxi_info(){
+    # INXI INFO
+    echo " " 
+    coloredEcho "Selected for inxi information" yellow
+    if command -v inxi 2>&1 >/dev/null
+    then 
+        echo "-> Inxi exist, retreving more information"
+        inxi -C
+        echo " " 
+        inxi -A 
+        echo " "
+        inxi -G
+        echo " " 
+        inxi -E 
+        echo " " 
+        inxi -B 
+        echo " "
+        inxi -D
+        echo " " 
+        inxi -j
+        echo " " 
+        inxi -m
+        echo " "
+    else
+        coloredEcho "Cannot get information, inxi is missing" $error
+    fi
+}
+
+function software_info() {
+    # SOFTWARE INFO
+    sleep 0.5
+    echo " " 
+    coloredEcho "Selected for Software information" yellow
+    coloredEcho "Operating system: `cat /etc/os-release | grep PRETTY_NAME | cut -d "=" -f 2 | sed 's/^.//' | sed 's/.$//'`" $info
+    coloredEcho "Desktop session: $DESKTOP_SESSION" $info
+    coloredEcho "Desktop engine: $XDG_CURRENT_DESKTOP" $info
+    coloredEcho "Desktop server: $XDG_SESSION_TYPE" $info
+    if systemctl --user status pulseaudio.service pulseaudio.socket &>/dev/null
+    then
+            coloredEcho "Audio server found: pulseaudio" $info
+    fi
+    if systemctl --user status pipewire.socket pipewire.service  &>/dev/null
+    then
+            coloredEcho "Audio server found: pipewire" $info
+    fi
+    if command -v cmake 2>&1 >/dev/null
+    then
+        coloredEcho "Cmake present, version: `cmake --version | head -1 | cut -d " " -f 3`" $info
+    fi
+    if command -v qmake 2>&1 >/dev/null
+        then
+        coloredEcho "Qtmake present, version: `qmake --version | head -1 | cut -d " " -f 3`" $info
+        coloredEcho "Qt version : `qmake --version | tail -1 | cut -d " " -f 4` " $info
+    fi
+    if command -v qmake6 2>&1 >/dev/null
+        then
+        coloredEcho "QT6 present, version: `qmake6 --version | tail -1 | cut -d " " -f 4` " $info
+    fi
+}
+
+function systemd_info() {
+    # SYSTEMD iNFO
+    echo " " 
+    coloredEcho "Selected for Systemd information" yellow
+    coloredEcho "`systemd-analyze | head -1`" $info
+    coloredEcho "`systemd-analyze | tail -1`" $info
+    echo "-> Analyzing boot chain"
+    systemd-analyze critical-chain
+}
+
+function benchmark() {
+    # BENCHMARK
+    echo " "
+    coloredEcho "Selected for benchmark" yellow
+    # Setting performance
+    if command -v sudo 2>&1 >/dev/null
+    then 
+        [ "$UID" -eq 0 ] || exec sudo bash "$0" "-root" "-b"
+    else
+        coloredEccho "sudo isn't configured in your system" $error
+    fi
+    if [ "$UID" -eq 0 -o "$EUID" -eq 0 ]; then
+        exec bash "$0" "-root" "-b"
+    else
+        coloredEcho "Try run as root" $error
+        exit 1
+    fi
+    exit
+}
+
+function benchmark_root(){
+    var=`cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor`
+    coloredEcho "Scaling_governor value: $var" magenta
+    if [ "$UID" -eq 0 -o "$EUID" -eq 0 ]; then
+        coloredEcho "Run as root, proceding" $fine
+        coloredEcho "Setting parameters performance in scaling_governor" $info
+        echo performance | tee /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+    else
+        exit 1
+    fi
+    echo " "     
+    coloredEcho "This benchmark use all the core in order to check the write/read speed" $info
+    coloredEcho "Measuring (in times) how long the system takes to sha312sum 10GB of zeros:" $info
+    dd if=/dev/zero bs=1MB count=10240 | sha512sum 
+    coloredEcho "Measuring root device writing speed, device: `df / | grep / | cut -d" " -f1`" $info
+    dd if=/dev/zero of=/tmp/temp bs=1M count=2048 conv=fdatasync,notrunc status=progress
+    coloredEcho "Measuring reading speed" $info
+    dd if=/tmp/temp of=/dev/null bs=1M count=2048 status=progress
+    coloredEcho "Measuring reading speed by buffer cache" $info
+    dd if=/tmp/temp of=/dev/null bs=1M count=2048 status=progress
+    #removing file
+    rm /tmp/temp
+    coloredEcho "Measuring performance in a loop cycle" $info
+    coloredEcho "This benchmark assign single core to the task" $info
+    taskset -c 0 bash -c 'x=0; time while ((x < 999999)); do ((++x)); done'
+    #removing performance
+    coloredEcho "restoring parameters $var in scaling_governor" $info
+    echo $var | tee /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 
+    exit
+}
+
+function welcome() { 
+    # welcome
+    coloredEcho "Simple script giving useful information of system. " magenta
+}
+
+function helps() {
+    # MAN
+    coloredEcho "use info -c to have informaton about cpu" magenta
+    coloredEcho "use info -h to have information about hardware" magenta
+    coloredEcho "use info -t ho have temperature information" magenta
+    coloredEcho "use info -d to have information about disk" magenta
+    coloredEcho "use info -l to have information about local area network" magenta
+    coloredEcho "use info -l -test to use also nmap" magenta
+    coloredEcho "use info -n to get nmap information" magenta
+    coloredEcho "use info -n -test to get network speed. More slowly" magenta
+    coloredEcho "use info -i to get inxi information (require inxi package)" magenta
+    coloredEcho "use info -s to get systemd-analyze information" magenta
+    coloredEcho "use info -software to have info about must have package" magenta
+    coloredEcho "use info -a to get all information of the script (slowly)" magenta
+    coloredEcho "use info -b to perform benchmark (not included in -a option)" magenta
+    coloredEcho "Testing for network: $network" magenta
+}
+
+# VARIABLE
+
+fine="green"
+error="red"
+info="blue"
+success="white"
+separator="yellow"
+
+if [ "$1" == "-root" ] && [ "$2" == "-h" ]; then hardware_info_root; fi
+if [ "$1" == "-root" ] && [ "$2" == "-b" ]; then benchmark_root; fi
+
+#START
+coloredEcho `drawline` $fine
+
+echo " " 
+welcome
+
+if [ -z "$1" ] 
+then
+    echo " "
+    coloredEcho "Use info -help to have all comand list" magenta
+fi
+
+#option -test
+if [ "$2" == "-test" ] || [ "$1" == "-a" ]
+then
+    network=true
+else
+    network=false
+fi
+
+#option -h
+if [ "$1" == "-help" ]
+then
+    echo " "
+    helps
+    exit 1
+fi
+
+echo " " 
+system
+
+#option -software
+if [ "$1" == "-software" ] || [ "$1" == "-a" ]
+then
+    echo " "
+    software_info
+fi
+
+#option -c
+if [ "$1" == "-c" ] || [ "$1" == "-a" ]
+then
+    echo " "
+    cpu_info
+fi
+
+#option -h
+if [ "$1" == "-h" ] || [ "$1" == "-a" ]
+then
+    echo " "
+    hardware_info
+fi
+
+#option -t
+if [ "$1" == "-t" ] || [ "$1" == "-a" ]
+then
+    echo " "
+    temperature_info
+fi
+
+#option -d
+if [ "$1" == "-d" ] || [ "$1" == "-a" ]
+then
+    echo " "
+    disk_info
+fi
+
+#option -l
+if [ "$1" == "-l" ] || [ "$1" == "-a" ]
+then
+    echo " "
+    lan_info
+fi
+
+#option -n
+if [ "$1" == "-n" ] || [ "$1" == "-a" ]
+then
+    echo " " 
+    network_info
+fi
+
+#option -i
+if [ "$1" == "-i" ] || [ "$1" == "-a" ]
+then
+    echo " " 
+    inxi_info
+fi
+
+#option -s
+if [ "$1" == "-s" ] || [ "$1" == "-a" ]
+then 
+    echo " " 
+    systemd_info
+fi
+
+#option -b
+if [ "$1" == "-b" ] 
+then
+    echo " " 
+    benchmark
+fi
+
+coloredEcho `drawline` $fine
+
+#END
+
